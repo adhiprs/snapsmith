@@ -35,7 +35,10 @@ final class ScreenCapturerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
         XCTAssertNotEqual(first, second)
-        XCTAssertTrue(first.lastPathComponent.hasPrefix("SnapSmith-"))
+        XCTAssertTrue(first.lastPathComponent.hasPrefix(ArchiveLayout.filePrefix))
+        XCTAssertNotNil(first.lastPathComponent.range(of: #"^SnapSmith \d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}( 2)?\.png$"#,
+                                                      options: .regularExpression))
+        XCTAssertTrue(second.lastPathComponent.hasSuffix(" 2.png"))  // same second: numbered, not overwritten
     }
 
     func testArchiveRejectsNonImage() throws {
@@ -74,8 +77,8 @@ final class BeautifierTests: XCTestCase {
     }
 
     func testOutputURLMirrorsRawIntoOutputFolder() {
-        let raw = URL(fileURLWithPath: "/a/Archives/Raw/x.png")
-        XCTAssertEqual(ScreenCapturer.outputURL(forRaw: raw).path, "/a/Archives/Output/x.png")
+        let raw = URL(fileURLWithPath: "/a/Archives/Originals/x.png")
+        XCTAssertEqual(ScreenCapturer.outputURL(forRaw: raw).path, "/a/Archives/Edited/x.png")
     }
 
     func testRecognizesRenderedText() throws {
@@ -177,6 +180,19 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(StyleStore.hex(Preferences.redactColor(defaults: defaults)), "#000000")
     }
 
+    func testEditorAndRedactionPreferences() throws {
+        let defaults = try freshDefaults()
+        XCTAssertEqual(Preferences.toolKeyScheme(defaults: defaults), .letters)
+        XCTAssertEqual(Preferences.redactStyle(defaults: defaults), .block)
+        XCTAssertEqual(StyleStore.hex(Preferences.markupColor(defaults: defaults)), StyleStore.hex(Annotator.defaultColor))
+        Preferences.setToolKeyScheme(.numbers, defaults: defaults)
+        Preferences.setRedactStyle(.pixelate, defaults: defaults)
+        Preferences.setMarkupColor(try XCTUnwrap(StyleStore.color(hex: "#2F6BFF")), defaults: defaults)
+        XCTAssertEqual(Preferences.toolKeyScheme(defaults: defaults), .numbers)
+        XCTAssertEqual(Preferences.redactStyle(defaults: defaults), .pixelate)
+        XCTAssertEqual(StyleStore.hex(Preferences.markupColor(defaults: defaults)), "#2f6bff")
+    }
+
     func testSettersPersist() throws {
         let defaults = try freshDefaults()
         Preferences.setCloseAfterCopy(false, defaults: defaults)
@@ -204,7 +220,7 @@ final class RedactorTests: XCTestCase {
         XCTAssertEqual(matched("Card 4111-1111-1111-1111", [.creditCards]), ["4111-1111-1111-1111"])
         XCTAssertEqual(matched("Server 192.168.1.20 up", [.ipAddresses]), ["192.168.1.20"])
         XCTAssertEqual(matched("v6 2001:db8::ff00:42:8329 up", [.ipAddresses]), ["2001:db8::ff00:42:8329"])
-        XCTAssertEqual(matched("key demo_abcdefghijklmnopqrstuvwxyz123456 end", [.apiKeys]),
+        XCTAssertEqual(matched("key demo_abcdefghijklmnopqrstuvwxyz123456 end", [.secrets]),
                        ["demo_abcdefghijklmnopqrstuvwxyz123456"])
     }
 
@@ -213,12 +229,61 @@ final class RedactorTests: XCTestCase {
         XCTAssertTrue(matched("Version 999.1.1.1", [.ipAddresses]).isEmpty)               // not an IPv4 address
         XCTAssertTrue(matched("synced 10:30 and 10:30:45", [.ipAddresses]).isEmpty)       // times are not IPv6
         XCTAssertTrue(matched("call Foo::bar()", [.ipAddresses]).isEmpty)                 // code is not IPv6
-        XCTAssertTrue(matched("internationalizationconfigurationmanager", [.apiKeys]).isEmpty)  // letters only
-        XCTAssertTrue(matched("12345678901234567890123456789012", [.apiKeys]).isEmpty)    // digits only
+        XCTAssertTrue(matched("internationalizationconfigurationmanager", [.secrets]).isEmpty)  // letters only
+        XCTAssertTrue(matched("12345678901234567890123456789012", [.secrets]).isEmpty)    // digits only
     }
 
     func testDisabledCategoriesAreIgnored() {
         XCTAssertEqual(matched("jane@example.com 1.2.3.4", [.ipAddresses]), ["1.2.3.4"])
+    }
+
+    func testCategoryTitles() {
+        XCTAssertEqual(RedactCategory.allCases.map(\.title),
+                       ["Email addresses", "Payment cards", "IP addresses", "Phone numbers", "Secrets & tokens"])
+    }
+
+    func testPhoneNumbers() {
+        XCTAssertEqual(matched("Call +62 812-3456-7890 now", [.phoneNumbers]), ["+62 812-3456-7890"])
+        XCTAssertEqual(matched("Call (555) 123-4567 now", [.phoneNumbers]), ["(555) 123-4567"])
+        XCTAssertEqual(matched("Hubungi 0812 3456 7890", [.phoneNumbers]), ["0812 3456 7890"])
+        for text in ["On 2026-10-12 09.30.15 we shipped", "Server 192.168.1.20", "ref 12345678901",
+                     "version 1.234.567.890", "call 555-1234"] {
+            XCTAssertTrue(matched(text, [.phoneNumbers]).isEmpty, text)
+        }
+        // A card number is reported as a card, not also as a phone number.
+        XCTAssertEqual(matched("Card 4111 1111 1111 1111", [.creditCards, .phoneNumbers]), ["4111 1111 1111 1111"])
+    }
+
+    func testJWTIsASecret() {
+        // Built at runtime so no token-shaped literal sits in the repository: alg "none", sub "demo".
+        func base64URL(_ text: String) -> String {
+            Data(text.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let jwt = [base64URL(#"{"alg":"none"}"#), base64URL(#"{"sub":"demo"}"#), "c2lnbmF0dXJl"].joined(separator: ".")
+        XCTAssertTrue(jwt.hasPrefix("eyJ"))
+        XCTAssertEqual(matched("token \(jwt) end", [.secrets]), [jwt])
+    }
+
+    func testEveryRedactStyleHidesTextAndBlockIsSolid() throws {
+        let ctx = try XCTUnwrap(Bitmap.context(width: 200, height: 100))
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+        // Alternating black and white stripes stand in for text.
+        ctx.setFillColor(gray: 0, alpha: 1)
+        for x in stride(from: 40, to: 160, by: 6) { ctx.fill(CGRect(x: x, y: 30, width: 3, height: 40)) }
+        let image = try XCTUnwrap(ctx.makeImage())
+        let region = RedactRegion(rect: CGRect(x: 30, y: 25, width: 140, height: 50), category: .emails, text: "x")
+
+        let block = try XCTUnwrap(Bitmap(try XCTUnwrap(Redactor.apply([region], to: image, color: .black, style: .block))))
+        XCTAssertEqual(block[100, 50], Inset.RGBA(r: 0, g: 0, b: 0))
+        for style in [RedactStyle.pixelate, .blur] {
+            let softened = try XCTUnwrap(Bitmap(try XCTUnwrap(Redactor.apply([region], to: image, color: .black, style: style))))
+            let r = Int(softened[100, 50].r)
+            XCTAssertTrue(r > 20 && r < 235, "\(style): expected averaged grey, got \(r)")
+            XCTAssertEqual(softened[5, 5], Inset.RGBA(r: 255, g: 255, b: 255))  // outside the region is untouched
+        }
     }
 
     func testApplyCoversRegionWithColour() throws {
@@ -287,13 +352,41 @@ final class LayoutOptionsTests: XCTestCase {
         return try XCTUnwrap(ctx.makeImage())
     }
 
-    func testWatermarkAddsBandUnderScreenshot() throws {
+    func testWatermarkBadgeNeedsNoExtraRoomWithEnoughPadding() throws {
         var style = BeautifyStyle()
-        style.padding = 24
-        style.watermark = "Screenshot by SnapSmith"
+        style.padding = 60
+        style.watermark = "Made with SnapSmith"
         let output = try XCTUnwrap(Beautifier.beautify(try image(1180, 680), style: style, scale: 2))
-        XCTAssertEqual(output.width, 1276)
-        XCTAssertEqual(output.height, 776 + 56)  // 28 pt band at 2x
+        XCTAssertEqual(output.width, 1180 + 240)
+        XCTAssertEqual(output.height, 680 + 240)
+    }
+
+    func testWatermarkBadgeGrowsOnlyTheBottomWhenPaddingIsTooThin() throws {
+        var style = BeautifyStyle()
+        style.padding = 0
+        style.watermark = "Made with SnapSmith"
+        let output = try XCTUnwrap(Beautifier.beautify(try image(1180, 680), style: style, scale: 2))
+        XCTAssertEqual(output.width, 1180)
+        XCTAssertGreaterThan(output.height, 680)
+    }
+
+    func testWatermarkSitsInTheChosenCorner() throws {
+        var style = BeautifyStyle()
+        style.padding = 40
+        style.watermark = "Made with SnapSmith"
+        style.gradientStart = .black
+        style.gradientEnd = .black
+        style.watermarkPosition = .bottomLeft
+        let bitmap = try XCTUnwrap(Bitmap(try XCTUnwrap(Beautifier.beautify(try image(1180, 680), style: style, scale: 2))))
+        func lightPixels(xRange: Range<Int>) -> Int {
+            var count = 0
+            for y in stride(from: bitmap.height - 80, to: bitmap.height - 10, by: 2) {
+                for x in stride(from: xRange.lowerBound, to: xRange.upperBound, by: 2) where bitmap[x, y].r > 100 { count += 1 }
+            }
+            return count
+        }
+        XCTAssertGreaterThan(lightPixels(xRange: 20..<320), 20)                       // bottom-left has the badge
+        XCTAssertEqual(lightPixels(xRange: (bitmap.width - 320)..<(bitmap.width - 20)), 0)  // bottom-right doesn't
     }
 
     func testAspectRatiosAreExact() throws {
@@ -314,6 +407,7 @@ final class LayoutOptionsTests: XCTestCase {
     func testNewOptionsRoundTrip() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "snapsmith-layout-\(UUID())"))
         var style = BeautifyStyle()
+        style.watermarkPosition = .bottomRight
         style.background = .image(URL(fileURLWithPath: "/tmp/a b.png"))
         style.aspectRatio = .portrait
         style.watermark = "hi"
@@ -322,27 +416,58 @@ final class LayoutOptionsTests: XCTestCase {
         XCTAssertEqual(loaded.background, style.background)
         XCTAssertEqual(loaded.aspectRatio, .portrait)
         XCTAssertEqual(loaded.watermark, "hi")
+        XCTAssertEqual(loaded.watermarkPosition, .bottomRight)
     }
 }
 
 final class AnnotationTests: XCTestCase {
-    func testVariantsCycleAndWrap() {
-        XCTAssertEqual(Annotation.TextSize.normal.next, .big)
-        XCTAssertEqual(Annotation.TextSize.big.next, .small)
-        XCTAssertEqual(Annotation.ArrowStyle.left.next, .right)
-        XCTAssertEqual(Annotation.ShapeKind.line.next, .rectangle)
+    func testVariantsAndPresets() {
+        XCTAssertEqual(Annotation.ArrowStyle.allCases.map(\.rawValue), ["pointer", "open", "curved", "double"])
+        XCTAssertEqual(Annotation.ShapeKind.allCases.map(\.rawValue), ["box", "ellipse", "highlight", "line"])
+        XCTAssertEqual(TextSizePreset.allCases.map(\.points), [14, 24, 40])
+        XCTAssertEqual(Annotation.ArrowStyle.double.next, .pointer)  // wraps around
+        XCTAssertEqual(Annotation.ShapeKind.line.next, .box)
     }
 
-    func testShapeIsDrawnAtTopLeftOriginCoordinates() throws {
-        let ctx = try XCTUnwrap(Bitmap.context(width: 400, height: 300))
+    private func blank(_ width: Int, _ height: Int) throws -> CGImage {
+        let ctx = try XCTUnwrap(Bitmap.context(width: width, height: height))
         ctx.setFillColor(gray: 1, alpha: 1)
-        ctx.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
-        let shape = Annotation.shape(from: CGPoint(x: 50, y: 40), to: CGPoint(x: 250, y: 200), kind: .rectangle)
-        let output = try XCTUnwrap(Annotator.apply([shape], to: try XCTUnwrap(ctx.makeImage()), scale: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(ctx.makeImage())
+    }
+
+    func testShapeIsDrawnAtTopLeftOriginCoordinatesInItsOwnColour() throws {
+        let blue = try XCTUnwrap(StyleStore.color(hex: "#2F6BFF"))
+        let shape = Annotation.shape(from: CGPoint(x: 50, y: 40), to: CGPoint(x: 250, y: 200), kind: .box, color: blue)
+        let output = try XCTUnwrap(Annotator.apply([shape], to: try blank(400, 300), scale: 1))
         let bitmap = try XCTUnwrap(Bitmap(output))
-        XCTAssertGreaterThan(bitmap[150, 40].r, 200)   // top edge is red
-        XCTAssertLessThan(bitmap[150, 40].g, 80)
+        XCTAssertGreaterThan(bitmap[150, 41].b, 200)   // top edge is blue
+        XCTAssertLessThan(bitmap[150, 41].r, 120)
         XCTAssertEqual(bitmap[150, 120], Inset.RGBA(r: 255, g: 255, b: 255))  // inside stays clear
+    }
+
+    func testHighlightIsATranslucentFill() throws {
+        let shape = Annotation.shape(from: CGPoint(x: 50, y: 40), to: CGPoint(x: 250, y: 200), kind: .highlight,
+                                     color: Annotator.defaultColor)
+        let bitmap = try XCTUnwrap(Bitmap(try XCTUnwrap(Annotator.apply([shape], to: try blank(400, 300), scale: 1))))
+        let inside = bitmap[150, 120]
+        XCTAssertEqual(inside.r, 255)  // red channel stays high: tinted, not opaque
+        XCTAssertLessThan(inside.g, 250)
+        XCTAssertGreaterThan(inside.g, 120)
+    }
+
+    func testLabelTextIsFilledWithItsColour() throws {
+        let label = Annotation.text("Hi", origin: CGPoint(x: 20, y: 20), size: 24, look: .label, color: Annotator.defaultColor)
+        let bitmap = try XCTUnwrap(Bitmap(try XCTUnwrap(Annotator.apply([label], to: try blank(200, 100), scale: 1))))
+        // The label's padding area, left of the text, is the markup colour.
+        let pixel = bitmap[24, 36]
+        XCTAssertGreaterThan(pixel.r, 200)
+        XCTAssertLessThan(pixel.b, 120)
+    }
+
+    func testReadableTextColourFlipsOnLightColours() {
+        XCTAssertEqual(Annotator.readableTextColor(on: .white), NSColor(white: 0.1, alpha: 1))
+        XCTAssertEqual(Annotator.readableTextColor(on: Annotator.defaultColor), .white)
     }
 }
 
@@ -351,7 +476,7 @@ final class ArchiveCleanerTests: XCTestCase {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("archive-\(UUID())")
         defer { try? fm.removeItem(at: root) }
-        for folder in ["Raw", "Output", "Raw/sub"] {
+        for folder in ["Originals", "Edited", "Originals/sub"] {
             try fm.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
         }
         let now = Date()
@@ -360,15 +485,15 @@ final class ArchiveCleanerTests: XCTestCase {
             try Data("x".utf8).write(to: url)
             try fm.setAttributes([.creationDate: now.addingTimeInterval(-daysOld * 86_400)], ofItemAtPath: url.path)
         }
-        try make("Raw/SnapSmith-old.png", daysOld: 5)
-        try make("Output/SnapSmith-old.png", daysOld: 4)
-        try make("Raw/SnapSmith-new.png", daysOld: 1)
-        try make("Raw/holiday-photo.png", daysOld: 30)
-        try make("Output/SnapSmith-notes.txt", daysOld: 30)
-        try make("Raw/sub/SnapSmith-nested.png", daysOld: 30)
+        try make("Originals/SnapSmith 2026-01-01 at 10.00.00.png", daysOld: 5)
+        try make("Edited/SnapSmith 2026-01-01 at 10.00.00.png", daysOld: 4)
+        try make("Originals/SnapSmith 2026-01-04 at 10.00.00.png", daysOld: 1)
+        try make("Originals/holiday-photo.png", daysOld: 30)
+        try make("Edited/SnapSmith notes.txt", daysOld: 30)
+        try make("Originals/sub/SnapSmith nested.png", daysOld: 30)
 
         let expired = ArchiveCleaner.expiredFiles(in: root, olderThan: 3, now: now)
-        XCTAssertEqual(expired.map(\.lastPathComponent), ["SnapSmith-old.png", "SnapSmith-old.png"])
+        XCTAssertEqual(expired.map(\.lastPathComponent), ["SnapSmith 2026-01-01 at 10.00.00.png", "SnapSmith 2026-01-01 at 10.00.00.png"])
         XCTAssertTrue(ArchiveCleaner.expiredFiles(in: root, olderThan: 7, now: now).isEmpty)
     }
 

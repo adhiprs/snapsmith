@@ -69,6 +69,43 @@ public enum Preferences {
         NotificationCenter.default.post(name: didChange, object: nil)
     }
 
+    /// How redacted text is hidden. A solid block by default (the safest).
+    public static func redactStyle(defaults: UserDefaults = .standard) -> RedactStyle {
+        defaults.string(forKey: redactStyleKey).flatMap(RedactStyle.init(rawValue:)) ?? .block
+    }
+
+    public static func setRedactStyle(_ style: RedactStyle, defaults: UserDefaults = .standard) {
+        defaults.set(style.rawValue, forKey: redactStyleKey)
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
+
+    static let redactStyleKey = "redactStyle"
+
+    // MARK: Markup and editor
+
+    static let markupColorKey = "markupColor"
+    static let toolKeySchemeKey = "toolKeyScheme"
+
+    /// The colour new markup is drawn in.
+    public static func markupColor(defaults: UserDefaults = .standard) -> NSColor {
+        defaults.string(forKey: markupColorKey).flatMap(StyleStore.color(hex:)) ?? Annotator.defaultColor
+    }
+
+    public static func setMarkupColor(_ color: NSColor, defaults: UserDefaults = .standard) {
+        defaults.set(StyleStore.hex(color), forKey: markupColorKey)
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
+
+    /// Which keys pick the editor's tools: letters (T, A, R, B) or numbers (1–4).
+    public static func toolKeyScheme(defaults: UserDefaults = .standard) -> ToolKeyScheme {
+        defaults.string(forKey: toolKeySchemeKey).flatMap(ToolKeyScheme.init(rawValue:)) ?? .letters
+    }
+
+    public static func setToolKeyScheme(_ scheme: ToolKeyScheme, defaults: UserDefaults = .standard) {
+        defaults.set(scheme.rawValue, forKey: toolKeySchemeKey)
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
+
     // MARK: Archive retention
 
     static let retentionKey = "archiveRetentionDays"
@@ -83,5 +120,21 @@ public enum Preferences {
     public static func setArchiveRetentionDays(_ days: Int?, defaults: UserDefaults = .standard) {
         defaults.set(max(days ?? 0, 0), forKey: retentionKey)
         NotificationCenter.default.post(name: didChange, object: nil)
+    }
+}
+
+/// Keys that select the editor's tools.
+public enum ToolKeyScheme: String, CaseIterable {
+    /// T text, A arrow, R redact, B box. Shift + the key cycles the tool's variant.
+    case letters
+    /// 1 text, 2 arrow, 3 redact, 4 shape. Shift + the key, or pressing the same key again,
+    /// cycles the tool's variant.
+    case numbers
+
+    public var title: String {
+        switch self {
+        case .letters: return "Letters (T A R B)"
+        case .numbers: return "Numbers (1–4)"
+        }
     }
 }

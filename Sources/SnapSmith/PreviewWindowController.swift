@@ -2,15 +2,16 @@ import AppKit
 import CaptureKit
 import UniformTypeIdentifiers
 
-/// Shown after every image capture: preview the result, mark it up,
-/// tweak the common options, then Copy (⌘C) or Save. Closes after copying when "Close after
-/// copy" is on (the default).
+/// Shown after every image capture: preview the result, mark it up, tweak the common
+/// options, then Copy (⌘C) or Save. Closes after copying when "Close after copy" is on
+/// (the default).
 ///
-/// Tools use the number keys: 1 text, 2 arrow, 3 redact, 4 shape; pressing a tool's key again
-/// cycles its variant (text size, arrow style, shape). Text is read once per capture (OCR is
-/// the slow part) for auto-redact matches and the clickable words in redact mode.
-/// Rendering order: redact → annotations → beautify. With auto-redact on, Copy/Save wait for
-/// the scan, so an unredacted image never reaches the clipboard.
+/// Tools are picked from the toolbar or the keyboard (T text, A arrow, R redact, B box, or
+/// 1–4, depending on the user's `ToolKeyScheme`); Shift + the key cycles the tool's variant,
+/// and the options strip under the toolbar holds the variant picker, text size and colour.
+/// Text is read once per capture (OCR is the slow part) for auto-redact matches and the
+/// clickable words in redact mode. Rendering order: redact → markup → beautify. With
+/// auto-redact on, Copy/Save wait for the scan, so an unredacted image never reaches the clipboard.
 final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSTextFieldDelegate {
     var onCopied: (() -> Void)?
     var onOpenStyle: (() -> Void)?
@@ -31,9 +32,14 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
 
     private let tools = NSSegmentedControl()
-    /// Instructions shown over the image while a tool is active.
-    private let editHint = NSVisualEffectView()
+    // Options strip under the toolbar
     private let hintLabel = NSTextField(labelWithString: "")
+    private let variantPopup = NSPopUpButton()
+    private let sizeSegments = NSSegmentedControl(labels: TextSizePreset.allCases.map(\.title), trackingMode: .selectOne,
+                                                  target: nil, action: nil)
+    private let sizeSlider = NSSlider(value: 24, minValue: 10, maxValue: 96, target: nil, action: nil)
+    private let colorWell = NSColorWell()
+    private let controlsStack = NSStackView()
 
     // Redaction state (per capture)
     private var lines: [TextLine]?
@@ -43,35 +49,38 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
     private var scanGeneration = 0
     private var isScanning = false
 
-    // Annotation state (per capture); tool variants persist across captures
+    // Markup state (per capture); each tool's variant persists across captures
     private var annotations: [Annotation] = []
     private var tool: EditTool?
-    private var textSize: Annotation.TextSize = .normal
-    private var arrowStyle: Annotation.ArrowStyle = .normal
-    private var shapeKind: Annotation.ShapeKind = .rectangle
+    private var textSize: CGFloat = TextSizePreset.medium.points
+    private var textLook: Annotation.TextLook = .label
+    private var arrowStyle: Annotation.ArrowStyle = .pointer
+    private var shapeKind: Annotation.ShapeKind = .box
     private var activeText: (field: NSTextField, origin: CGPoint)?
 
-    /// Undo stack of earlier (annotations, redaction edits) states.
+    /// Undo stack of earlier (markup, redaction edits) states.
     private var history: [([Annotation], RedactionEdits)] = []
 
     private let renderQueue = DispatchQueue(label: "snapsmith.capture-preview")
     private var renderGeneration = 0
     private var observers: [NSObjectProtocol] = []
 
+    private var scheme: ToolKeyScheme { Preferences.toolKeyScheme() }
+
     init() {
         let window = PreviewWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-                              styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+                                   styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                                   backing: .buffered, defer: false)
         window.title = "SnapSmith"
         window.isReleasedWhenClosed = false
         window.level = .floating  // stay above the app that was just captured
-        window.minSize = NSSize(width: 900, height: 400)
+        window.minSize = NSSize(width: 900, height: 420)
         super.init(window: window)
         window.delegate = self
         buildToolbar()
         buildUI()
 
-        // Keep in sync with the Style window and the menu.
+        // Keep in sync with the Style window, the shortcuts window and the menu.
         for name in [StyleStore.didChange, Preferences.didChange] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.reloadSettings()
@@ -113,20 +122,27 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         tools.segmentCount = EditTool.allCases.count
         tools.trackingMode = .selectOne
         for tool in EditTool.allCases {
-            let index = tool.rawValue - 1
-            tools.setImage(NSImage(systemSymbolName: tool.symbol, accessibilityDescription: tool.title), forSegment: index)
-            tools.setLabel("\(tool.title) \(tool.rawValue)", forSegment: index)
-            tools.setToolTip("\(tool.title) (\(tool.rawValue))" + (tool == .redact ? "" : " — press again to change style"),
-                             forSegment: index)
+            tools.setImage(NSImage(systemSymbolName: tool.symbol, accessibilityDescription: tool.title), forSegment: tool.rawValue - 1)
         }
         tools.target = self
         tools.action = #selector(toolClicked)
+        refreshToolLabels()
 
         let toolbar = NSToolbar(identifier: "SnapSmithPreview")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         window?.toolbar = toolbar
         window?.toolbarStyle = .unified
+    }
+
+    /// Segment captions show the key for the current scheme ("Text T" or "Text 1").
+    private func refreshToolLabels() {
+        for tool in EditTool.allCases {
+            let index = tool.rawValue - 1
+            let key = tool.key(scheme)
+            tools.setLabel("\(tool.title) \(key)", forSegment: index)
+            tools.setToolTip("\(tool.title) (\(key)). Shift+\(key) changes its style.", forSegment: index)
+        }
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -161,7 +177,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         guard let window, let content = window.contentView else { return }
 
         imageView.imageScaling = .scaleProportionallyUpOrDown
-        // Weakest possible: the image view absorbs whatever space the bar leaves.
+        // Weakest possible: the image view absorbs whatever space the bars leave.
         for orientation in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
             imageView.setContentCompressionResistancePriority(.init(1), for: orientation)
             imageView.setContentHuggingPriority(.init(1), for: orientation)
@@ -183,7 +199,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         redactStatus.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
 
         let styleButton = NSButton(title: "Style…", target: self, action: #selector(openStyle))
-        // Esc is handled in keyDown/cancelOperation so it can mean "leave the tool" first.
+        // Esc is handled in cancelOperation so it can mean "leave the tool" first.
         let closeButton = NSButton(title: "Close", target: self, action: #selector(closeWindow))
         closeButton.toolTip = "Close (Esc)"
         let saveButton = NSButton(title: "Save…", target: self, action: #selector(save))
@@ -210,19 +226,40 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         // its controls so the image view gets all the spare height.
         bar.setHuggingPriority(.defaultHigh, for: .vertical)
 
-        hintLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
-        hintLabel.translatesAutoresizingMaskIntoConstraints = false
-        editHint.material = .hudWindow
-        editHint.state = .active
-        editHint.wantsLayer = true
-        editHint.layer?.cornerRadius = 8
-        editHint.isHidden = true
-        editHint.addSubview(hintLabel)
+        // Options strip: a hint on the left, the active tool's options on the right.
+        hintLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.setContentCompressionResistancePriority(.init(100), for: .horizontal)
+        variantPopup.controlSize = .small
+        variantPopup.target = self
+        variantPopup.action = #selector(variantChanged)
+        sizeSegments.controlSize = .small
+        sizeSegments.target = self
+        sizeSegments.action = #selector(sizePresetChanged)
+        sizeSlider.controlSize = .small
+        sizeSlider.isContinuous = true
+        sizeSlider.target = self
+        sizeSlider.action = #selector(sizeSliderChanged)
+        sizeSlider.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        colorWell.target = self
+        colorWell.action = #selector(colorChanged)
+        colorWell.isContinuous = true
+        colorWell.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        colorWell.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        colorWell.toolTip = "Markup colour"
+        controlsStack.setViews([variantPopup, sizeSegments, sizeSlider, colorWell], in: .leading)
+        controlsStack.spacing = 8
+
+        let strip = NSStackView(views: [hintLabel, controlsStack])
+        strip.spacing = 12
+        strip.edgeInsets = NSEdgeInsets(top: 4, left: 16, bottom: 4, right: 16)
+        strip.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
 
         let background = NSVisualEffectView()
         background.material = .underWindowBackground
 
-        for view in [background, imageView, bar, editHint] {
+        for view in [background, strip, imageView, bar] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -233,26 +270,24 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
             background.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             background.topAnchor.constraint(equalTo: content.topAnchor),
             background.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            strip.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            strip.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            strip.topAnchor.constraint(equalTo: top, constant: 2),
             imageView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             imageView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            imageView.topAnchor.constraint(equalTo: top, constant: 8),
+            imageView.topAnchor.constraint(equalTo: strip.bottomAnchor, constant: 2),
             imageView.bottomAnchor.constraint(equalTo: bar.topAnchor),
             bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             bar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            hintLabel.leadingAnchor.constraint(equalTo: editHint.leadingAnchor, constant: 12),
-            hintLabel.trailingAnchor.constraint(equalTo: editHint.trailingAnchor, constant: -12),
-            hintLabel.topAnchor.constraint(equalTo: editHint.topAnchor, constant: 6),
-            hintLabel.bottomAnchor.constraint(equalTo: editHint.bottomAnchor, constant: -6),
-            editHint.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
-            editHint.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 8),
         ])
+        updateOptionsStrip()
     }
 
     /// Fits the capture's aspect ratio inside a comfortable on-screen size.
     private func sizeWindowToFit(_ image: CGImage) {
         guard let window, let screen = NSScreen.main?.visibleFrame else { return }
-        let chrome = NSSize(width: 32, height: 60 + 56)  // title bar + toolbar, bottom bar
+        let chrome = NSSize(width: 32, height: 60 + 36 + 56)  // title bar + toolbar, options strip, bottom bar
         let maxImage = NSSize(width: min(1000, screen.width * 0.7) - chrome.width,
                               height: min(720, screen.height * 0.75) - chrome.height)
         let pointSize = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
@@ -276,6 +311,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         inset.isEnabled = styled
         padding.isEnabled = styled
         paddingLabel.textColor = styled ? .labelColor : .disabledControlTextColor
+        refreshToolLabels()
+        updateOptionsStrip()
         if Preferences.autoRedact() || tool == .redact { startScanIfNeeded() }
         updateRedactStatus()
         renderPreview()
@@ -302,23 +339,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
     // MARK: - Tools
 
     @objc private func toolClicked() {
-        selectTool(EditTool(rawValue: tools.selectedSegment + 1))
-    }
-
-    /// Choosing the active tool again cycles its variant (as pressing its key twice does).
-    private func selectTool(_ chosen: EditTool?) {
-        guard let chosen else { return setTool(nil) }
-        if chosen == tool {
-            switch chosen {
-            case .text: textSize = textSize.next
-            case .arrow: arrowStyle = arrowStyle.next
-            case .shape: shapeKind = shapeKind.next
-            case .redact: break
-            }
-            updateHint()
-        } else {
-            setTool(chosen)
-        }
+        setTool(EditTool(rawValue: tools.selectedSegment + 1))
     }
 
     private func setTool(_ newTool: EditTool?) {
@@ -326,33 +347,110 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         tool = newTool
         imageView.tool = newTool
         tools.selectedSegment = (newTool?.rawValue ?? 0) - 1  // -1 clears the selection
-        editHint.isHidden = newTool == nil
         if newTool == .redact { startScanIfNeeded() }
-        updateHint()
+        updateOptionsStrip()
         updateRedactStatus()
         renderPreview()
     }
 
-    private func updateHint() {
-        let variant: String
-        switch tool {
-        case .text: variant = "Text: \(textSize.rawValue) — press 1 to change size  ·  Click to type"
-        case .arrow: variant = "Arrow: \(arrowStyle == .normal ? "straight" : "curved \(arrowStyle.rawValue)") — press 2 to change  ·  Drag to draw"
-        case .shape: variant = "Shape: \(shapeKind.rawValue) — press 4 to change  ·  Drag to draw"
-        case .redact: variant = "Click text to hide or show it  ·  Drag to draw a box"
-        case nil: variant = ""
+    private var markupColor: NSColor { Preferences.markupColor() }
+
+    /// Shows the active tool's options (variant picker, text size, colour) and a one-line hint.
+    private func updateOptionsStrip() {
+        let keys = EditTool.allCases.map { $0.key(scheme) }.joined(separator: " ")
+        guard let tool else {
+            controlsStack.isHidden = true
+            hintLabel.stringValue = "Mark up with the toolbar or the keys \(keys): text, arrow, redact, box."
+            return
         }
-        hintLabel.stringValue = variant + "  ·  Esc when done"
+        controlsStack.isHidden = false
+        let key = tool.key(scheme)
+        variantPopup.removeAllItems()
+        switch tool {
+        case .text:
+            variantPopup.addItems(withTitles: Annotation.TextLook.allCases.map(\.title))
+            variantPopup.selectItem(at: Annotation.TextLook.allCases.firstIndex(of: textLook) ?? 0)
+            hintLabel.stringValue = "Click to place text, type, press Return. Shift+\(key) changes the size. Esc when done."
+        case .arrow:
+            variantPopup.addItems(withTitles: Annotation.ArrowStyle.allCases.map(\.title))
+            variantPopup.selectItem(at: Annotation.ArrowStyle.allCases.firstIndex(of: arrowStyle) ?? 0)
+            hintLabel.stringValue = "Drag from the tail to the tip. Shift+\(key) changes the style. Esc when done."
+        case .shape:
+            variantPopup.addItems(withTitles: Annotation.ShapeKind.allCases.map(\.title))
+            variantPopup.selectItem(at: Annotation.ShapeKind.allCases.firstIndex(of: shapeKind) ?? 0)
+            hintLabel.stringValue = "Drag to draw. Shift+\(key) changes the shape. Esc when done."
+        case .redact:
+            variantPopup.addItems(withTitles: RedactStyle.allCases.map(\.title))
+            variantPopup.selectItem(at: RedactStyle.allCases.firstIndex(of: Preferences.redactStyle()) ?? 0)
+            hintLabel.stringValue = "Click text to hide or show it, or drag a box. Shift+\(key) changes how it's hidden. Esc when done."
+        }
+        sizeSegments.isHidden = tool != .text
+        sizeSlider.isHidden = tool != .text
+        colorWell.isHidden = tool == .redact
+        sizeSlider.doubleValue = Double(textSize)
+        sizeSegments.selectedSegment = TextSizePreset.allCases.firstIndex { $0.points == textSize } ?? -1
+        colorWell.color = markupColor
     }
 
-    /// Number keys 1–4 pick tools; Esc leaves the tool, then closes the window.
+    @objc private func variantChanged() {
+        let index = variantPopup.indexOfSelectedItem
+        switch tool {
+        case .text: textLook = Annotation.TextLook.allCases[index]
+        case .arrow: arrowStyle = Annotation.ArrowStyle.allCases[index]
+        case .shape: shapeKind = Annotation.ShapeKind.allCases[index]
+        case .redact: Preferences.setRedactStyle(RedactStyle.allCases[index])  // posts a change that re-renders
+        case nil: break
+        }
+        refocusCanvas()
+    }
+
+    @objc private func sizePresetChanged() {
+        guard sizeSegments.selectedSegment >= 0 else { return }
+        textSize = TextSizePreset.allCases[sizeSegments.selectedSegment].points
+        sizeSlider.doubleValue = Double(textSize)
+        refocusCanvas()
+    }
+
+    @objc private func sizeSliderChanged() {
+        textSize = CGFloat(sizeSlider.doubleValue.rounded())
+        sizeSegments.selectedSegment = TextSizePreset.allCases.firstIndex { $0.points == textSize } ?? -1
+    }
+
+    @objc private func colorChanged() {
+        Preferences.setMarkupColor(colorWell.color)
+    }
+
+    /// Hands keyboard focus back to the window so tool keys keep working after using a control.
+    private func refocusCanvas() {
+        window?.makeFirstResponder(nil)
+    }
+
+    /// Shift + a tool's key cycles its variant (text: size). With the number keys, pressing the
+    /// same key again does too.
+    private func cycleVariant(of tool: EditTool) {
+        switch tool {
+        case .text:
+            let presets = TextSizePreset.allCases
+            let current = presets.firstIndex { $0.points == textSize } ?? -1
+            textSize = presets[(current + 1) % presets.count].points
+        case .arrow: arrowStyle = arrowStyle.next
+        case .shape: shapeKind = shapeKind.next
+        case .redact: Preferences.setRedactStyle(Preferences.redactStyle().next)
+        }
+        updateOptionsStrip()
+    }
+
+    /// Tool keys pick tools; Esc leaves the tool, then closes the window.
     /// Typing in a text annotation never gets here: the field editor handles those keys.
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { return cancelOperation(nil) }
-        if event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-           let digit = event.charactersIgnoringModifiers.flatMap(Int.init),
-           let chosen = EditTool(rawValue: digit) {
-            return selectTool(chosen)
+        if let (chosen, shift) = EditTool.from(event: event, scheme: scheme) {
+            if shift || (scheme == .numbers && chosen == tool) {
+                if chosen == tool { cycleVariant(of: chosen) } else { setTool(chosen) }
+            } else {
+                setTool(chosen)
+            }
+            return
         }
         super.keyDown(with: event)
     }
@@ -363,8 +461,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
 
     private func annotation(from: CGPoint, to: CGPoint) -> Annotation? {
         switch tool {
-        case .arrow: return .arrow(from: from, to: to, style: arrowStyle)
-        case .shape: return .shape(from: from, to: to, kind: shapeKind)
+        case .arrow: return .arrow(from: from, to: to, style: arrowStyle, color: markupColor)
+        case .shape: return .shape(from: from, to: to, kind: shapeKind, color: markupColor)
         default: return nil
         }
     }
@@ -410,19 +508,34 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
     // MARK: - Text annotations
 
     private func beginText(at point: CGPoint) {
+        let color = markupColor
         let field = NSTextField(string: "")
         field.isBordered = false
-        field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: textSize.points * scale * imageView.viewScale, weight: .semibold)
-        field.textColor = Annotator.color
+        field.font = .systemFont(ofSize: textSize * scale * imageView.viewScale, weight: .semibold)
         field.placeholderString = "Type…"
+        if textLook == .label {
+            // Preview the label while typing: coloured background, readable text.
+            field.drawsBackground = true
+            field.backgroundColor = color
+            field.textColor = Annotator.readableTextColor(on: color)
+            field.wantsLayer = true
+            field.layer?.cornerRadius = 6
+        } else {
+            field.drawsBackground = false
+            field.textColor = color
+        }
         field.delegate = self
         field.sizeToFit()
         field.frame.size.width = max(160, field.frame.width)
-        // The annotation's origin is its top-left; NSTextField pads its text by about 2 pt.
+        // The annotation's origin is its top-left (the label box's, for labels), and a label pads its
+        // text; place the field so its text lands where the finished text will be.
+        // NSTextField itself pads its text by about 2 pt.
         let viewPoint = imageView.toView(point)
-        field.frame.origin = NSPoint(x: viewPoint.x - 2, y: viewPoint.y - field.frame.height)
+        let labelPad = textLook == .label ? CGSize(width: textSize * 0.55, height: textSize * 0.3) : .zero
+        let toView = scale * imageView.viewScale
+        field.frame.origin = NSPoint(x: viewPoint.x + labelPad.width * toView - 2,
+                                     y: viewPoint.y - labelPad.height * toView - field.frame.height)
         imageView.addSubview(field)
         activeText = (field, point)
         updateTypingKeys()
@@ -456,7 +569,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         window?.makeFirstResponder(nil)
         guard !text.isEmpty else { return }
         history.append((annotations, edits))
-        annotations.append(.text(text, origin: origin, size: textSize))
+        annotations.append(.text(text, origin: origin, size: textSize, look: textLook, color: markupColor))
         changed()
     }
 
@@ -562,7 +675,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         try ensureRegions()
         guard let source else { return nil }
         return Pipeline.render(source, redactions: effectiveRegions, redactColor: Preferences.redactColor(),
-                               annotations: annotations, style: Preferences.beautify() ? style : nil, scale: scale)
+                               redactStyle: Preferences.redactStyle(), annotations: annotations,
+                               style: Preferences.beautify() ? style : nil, scale: scale)
     }
 
     private func renderPreview() {
@@ -572,13 +686,14 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate, NSToo
         // Until the scan finishes, auto matches aren't shown yet (status says "Scanning…").
         // With a tool active the plain capture is shown, so clicks map straight onto its pixels.
         let editing = tool != nil
-        let (redactions, color, annotations, style, scale) = (effectiveRegions, Preferences.redactColor(), annotations,
-                                                              Preferences.beautify() && !editing ? self.style : nil, self.scale)
+        let (redactions, color, redactStyle, annotations, style, scale) = (
+            effectiveRegions, Preferences.redactColor(), Preferences.redactStyle(), annotations,
+            Preferences.beautify() && !editing ? self.style : nil, self.scale)
         imageView.capturePixelSize = CGSize(width: source.width, height: source.height)
         imageView.captureScale = scale
         imageView.targets = tool == .redact ? words.map(\.rect) + redactions.map(\.coveredRect) : []
         renderQueue.async { [weak self] in
-            guard let output = Pipeline.render(source, redactions: redactions, redactColor: color,
+            guard let output = Pipeline.render(source, redactions: redactions, redactColor: color, redactStyle: redactStyle,
                                                annotations: annotations, style: style, scale: scale) else { return }
             let image = NSImage(cgImage: output, size: NSSize(width: CGFloat(output.width) / scale,
                                                               height: CGFloat(output.height) / scale))

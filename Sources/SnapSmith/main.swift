@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Moves captures older than the retention setting to the Trash (SnapSmith's own archive only).
     private func cleanArchive() {
         guard let days = Preferences.archiveRetentionDays() else { return }
-        let root = capturer.archiveDirectory.deletingLastPathComponent()  // Archives/, holding Raw and Output
+        let root = capturer.archiveDirectory.deletingLastPathComponent()  // Archives/, holding Originals and Edited
         DispatchQueue.global(qos: .utility).async {
             let removed = ArchiveCleaner.clean(root, olderThan: days)
             if !removed.isEmpty { NSLog("SnapSmith: moved \(removed.count) capture(s) older than \(days) days to the Trash") }
@@ -279,7 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openArchive() {
-        // Open Archives/ rather than Archives/Raw so both Raw and Output are visible.
+        // Open Archives/ rather than Archives/Originals so Originals and Edited are both visible.
         try? FileManager.default.createDirectory(at: capturer.archiveDirectory, withIntermediateDirectories: true)
         NSWorkspace.shared.open(capturer.archiveDirectory.deletingLastPathComponent())
     }

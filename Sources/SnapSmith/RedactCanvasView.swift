@@ -1,7 +1,8 @@
 import AppKit
+import Carbon.HIToolbox
 import CaptureKit
 
-/// The editing tools, selected with keys 1 text, 2 arrow, 3 redact, 4 shape.
+/// The editing tools. Their keys depend on the user's `ToolKeyScheme`.
 enum EditTool: Int, CaseIterable {
     case text = 1, arrow, redact, shape
 
@@ -10,7 +11,7 @@ enum EditTool: Int, CaseIterable {
         case .text: return "Text"
         case .arrow: return "Arrow"
         case .redact: return "Redact"
-        case .shape: return "Shape"
+        case .shape: return "Box"
         }
     }
 
@@ -20,6 +21,39 @@ enum EditTool: Int, CaseIterable {
         case .arrow: return "arrow.up.right"
         case .redact: return "eye.slash"
         case .shape: return "square"
+        }
+    }
+
+    /// The key that selects this tool: "T", "A", "R", "B" or "1"–"4".
+    func key(_ scheme: ToolKeyScheme) -> String {
+        switch scheme {
+        case .numbers: return "\(rawValue)"
+        case .letters:
+            switch self {
+            case .text: return "T"
+            case .arrow: return "A"
+            case .redact: return "R"
+            case .shape: return "B"
+            }
+        }
+    }
+
+    /// The tool a key press selects, and whether Shift was held (which cycles its variant).
+    /// Letters follow the typed character, so they work on other layouts; numbers use the
+    /// number row's key codes, since Shift changes the character they type.
+    static func from(event: NSEvent, scheme: ToolKeyScheme) -> (tool: EditTool, shift: Bool)? {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return nil }
+        let shift = event.modifierFlags.contains(.shift)
+        switch scheme {
+        case .numbers:
+            let codes = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4]
+            guard let index = codes.firstIndex(of: Int(event.keyCode)) else { return nil }
+            return (EditTool(rawValue: index + 1)!, shift)
+        case .letters:
+            guard let character = event.charactersIgnoringModifiers?.lowercased(),
+                  let tool = allCases.first(where: { $0.key(.letters).lowercased() == character })
+            else { return nil }
+            return (tool, shift)
         }
     }
 }

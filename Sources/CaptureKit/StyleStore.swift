@@ -19,6 +19,7 @@ public enum StyleStore {
         style.background = (dict["background"] as? String).flatMap(background(from:)) ?? .gradient
         style.aspectRatio = (dict["aspectRatio"] as? String).flatMap(AspectRatio.init(rawValue:))
         style.watermark = dict["watermark"] as? String
+        style.watermarkPosition = (dict["watermarkPosition"] as? String).flatMap(WatermarkPosition.init(rawValue:)) ?? .bottomLeft
         return style
     }
 
@@ -36,6 +37,7 @@ public enum StyleStore {
         dict["background"] = string(from: style.background)
         dict["aspectRatio"] = style.aspectRatio?.rawValue
         dict["watermark"] = style.watermark
+        dict["watermarkPosition"] = style.watermarkPosition.rawValue
         defaults.set(dict, forKey: "style")
         NotificationCenter.default.post(name: didChange, object: nil)
     }

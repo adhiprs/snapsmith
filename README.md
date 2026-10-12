@@ -25,9 +25,9 @@
 ## Features
 
 - **Capture** an area or a window with global shortcuts, or copy the text out of any part of the screen (OCR).
-- **Beautify**: put the capture on a gradient, your wallpaper or any picture, with padding, rounded corners, a shadow, a canvas shape for social posts (16:9, 1:1, 4:5…) and an optional watermark.
-- **Mark up** with text, arrows and shapes.
-- **Redact**: automatically hide emails, credit-card numbers, IP addresses and API keys, then fix mistakes by hand.
+- **Beautify**: put the capture on a gradient, your wallpaper or any picture, with padding, rounded corners, a shadow, a canvas shape for social posts (16:9, 1:1, 4:5…) and an optional watermark badge.
+- **Mark up** with text labels, arrows (four styles), boxes, ellipses and highlights, in any colour.
+- **Redact**: automatically hide email addresses, payment cards, IP addresses, phone numbers and secrets such as API keys and tokens. Cover them with a solid block, pixelate or blur, then fix mistakes by hand.
 - **Private**: capture, text recognition and rendering all happen on your Mac. Nothing is uploaded.
 - **Tidy**: old captures are moved to the Trash automatically (3 days by default).
 
@@ -56,13 +56,13 @@ Without that permission, captures come out as just your desktop wallpaper.
 
 1. Press **⌥⇧4** (Option + Shift + 4) and drag over part of your screen. Press Space to pick a window instead.
 2. A preview window opens. Tick **Beautify** to add the background, shadow and padding.
-3. Optionally press **1**, **2**, **3** or **4** to add text, an arrow, a redaction or a shape (see [Markup tools](#markup-tools)).
+3. Optionally press **T**, **A**, **R** or **B** to add text, an arrow, a redaction or a box (see [Markup tools](#markup-tools)).
 4. Press **⌘C** (or click **Copy**), then paste anywhere.
 
 Want to skip the preview? **⌥⇧3** captures an area and copies the finished image straight away.
 
 <p align="center">
-  <img src="docs/images/preview-window.png" alt="The preview window: a toolbar with Text, Arrow, Redact and Shape tools, the finished screenshot, and Beautify, Inset, Padding, Redact, Close after copy, Style, Close, Save and Copy controls along the bottom" width="760">
+  <img src="docs/images/preview-window.png" alt="The preview window: a toolbar with Text, Arrow, Redact and Box tools, a hint line, the finished screenshot, and Beautify, Inset, Padding, Redact, Close after copy, Style, Close, Save and Copy controls along the bottom" width="760">
 </p>
 
 ## Shortcuts
@@ -76,8 +76,10 @@ Want to skip the preview? **⌥⇧3** captures an area and copies the finished i
 
 Change them under **menu bar icon → Shortcuts…**: click a shortcut, press the new keys (include ⌘, ⌥ or ⌃), Esc to cancel, Delete to turn it off. Shortcuts macOS already uses (⇧⌘3/4/5, ⌘Space, and anything else enabled in System Settings → Keyboard → Keyboard Shortcuts) are refused. macOS doesn't let apps see each other's shortcuts, so if one doesn't respond, another app probably has it: pick a different one.
 
+The same window has an **Editor tool keys** setting: **Letters (T A R B)** by default, or **Numbers (1–4)** if you prefer those (see [Markup tools](#markup-tools)).
+
 <p align="center">
-  <img src="docs/images/shortcuts.png" alt="The Shortcuts window with a recorder for each action" width="420">
+  <img src="docs/images/shortcuts.png" alt="The Shortcuts window with a recorder for each action, and the Editor tool keys setting" width="420">
 </p>
 
 ## Using the preview window
@@ -89,22 +91,46 @@ Change them under **menu bar icon → Shortcuts…**: click a shortcut, press th
 
 ### Markup tools
 
-The tools are in the toolbar and on the number keys. Press a tool's key again to cycle its variant.
+The tools are in the toolbar and on the keyboard. When a tool is active, a strip under the toolbar shows its options: a style picker, text size, and a colour.
 
-| Key | Tool | How | Variants |
+| Key | Tool | How | Styles (picker, or Shift + the key) |
 | --- | --- | --- | --- |
-| **1** | Text | Click, type, press Return | small, normal, big |
-| **2** | Arrow | Drag from the tail to the tip | straight, curved left, curved right |
-| **3** | Redact | Click a black block to show that text again, click any word to hide it, or drag to draw a box | |
-| **4** | Shape | Drag | rectangle, rounded, oval, line |
+| **T** | Text | Click, type, press Return | Label (a filled badge) or plain text. Size S / M / L or a free slider |
+| **A** | Arrow | Drag from the tail to the tip | Pointer, open head, curved, double-headed |
+| **R** | Redact | Click a black block to show that text again, click any word to hide it, or drag to draw a box | Solid block, pixelate, blur |
+| **B** | Box | Drag | Box, ellipse, highlight, line |
 
-**Esc** leaves the tool (with no tool active, Esc closes the window). **⌘Z** undoes markup and redaction edits. While a tool is active the preview shows the plain capture, so your clicks land exactly where you aim. Markup starts fresh with each new capture.
+- **Shift + the key** cycles the active tool's style: Shift+A for arrows, Shift+B for shapes, Shift+T for the text size, Shift+R for how redaction hides text.
+- **Colour:** the colour well in the strip sets the colour for new text, arrows and shapes; markup you already drew keeps its colour.
+- **Esc** leaves the tool (with no tool active, Esc closes the window). **⌘Z** undoes markup and redaction edits.
+- While a tool is active the preview shows the plain capture, so your clicks land exactly where you aim. Markup starts fresh with each new capture.
+- **Prefer the number keys?** In **Shortcuts… → Editor tool keys**, choose **Numbers (1–4)**: 1 text, 2 arrow, 3 redact, 4 shape. With numbers, pressing a tool's key again also cycles its style.
+
+<p align="center">
+  <img src="docs/images/markup-tools.png" alt="The preview window with the Text tool active: the options strip shows the label style, S/M/L sizes, a size slider and a colour well" width="760">
+</p>
 
 ### Redact
 
-Turn on **Redact** and SnapSmith reads the capture's text on your Mac and covers emails, credit-card numbers, IP addresses and API keys with solid blocks. The note next to the checkbox shows how many items were hidden (hover it for the list). Copy and Save wait for the scan to finish, so an unredacted image never reaches your clipboard.
+Turn on **Redact** and SnapSmith reads the capture's text on your Mac and hides what it recognises as sensitive. The note next to the checkbox shows how many items were hidden (hover it for the list). Copy and Save wait for the scan to finish, so an unredacted image never reaches your clipboard.
 
-Detection is best-effort. Always look at the result before sharing something sensitive, and use tool **3** to fix anything it missed or hid by mistake.
+| Category | Examples it catches |
+| --- | --- |
+| Email addresses | `jane.doe@example.com` |
+| Payment cards | 13–19 digit numbers that pass the Luhn check |
+| IP addresses | IPv4 and IPv6 |
+| Phone numbers | `+62 812-3456-7890`, `(555) 123-4567`, `0812 3456 7890` |
+| Secrets & tokens | long API keys, prefixed tokens (`ghp_…`, `sk_…`), JWTs |
+
+Only email addresses are on by default; pick the rest in Style Settings. **Hide with** chooses how matches are covered, and the same choice applies to anything you hide by hand with the Redact tool:
+
+<p align="center">
+  <img src="docs/images/redact-styles.png" alt="The same card with its emails and card number hidden three ways: a solid block, pixelated, and blurred" width="760">
+</p>
+
+**Use the solid block for anything sensitive.** Pixelate and blur leave a faint trace of the original in the image, and such traces can sometimes be partly reversed. They suit softening incidental details, such as names in a demo, but not passwords or card numbers.
+
+Detection is best-effort: it can miss text it can't read, and it can hide harmless text that looks like a secret. Always look at the result before sharing something sensitive, and use the Redact tool (**R**) to fix anything it got wrong.
 
 ## Style settings
 
@@ -119,15 +145,15 @@ Open **menu bar icon → Style Settings…** (⌘,). Changes show up live on you
 | Padding, Rounded, Shadow | The look of the card around your capture |
 | Background | A gradient (pick two colours and an angle), your **desktop wallpaper**, or any **image** |
 | Ratio | Free, or 16:9, 4:3, 3:2, 1:1, 4:5, 9:16 for posts and slides |
-| Watermark | Text in the bottom-right corner, under the screenshot |
-| Auto-redact | Which kinds of text to hide, and the block colour |
+| Watermark | A small badge with your text in a corner of the canvas (bottom left, centre or right). If the padding is too thin to hold it, only the bottom edge grows |
+| Auto-redact | Which kinds of text to hide, how to hide it (solid block, pixelate, blur), and the block colour |
 | Delete captures after … days | Old captures go to the Trash automatically; turn it off to keep everything |
 
 ## Where your captures go
 
-`~/Library/Application Support/SnapSmith/Archives/`, with `Raw/` for the originals and `Output/` for the processed images. Use **menu bar icon → Open Archive Folder** to jump there.
+`~/Library/Application Support/SnapSmith/Archives/`, with `Originals/` for captures as taken and `Edited/` for the version with redaction, markup and styling applied. Files are named like `SnapSmith 2026-10-12 at 09.30.15.png`. Use **menu bar icon → Open Archive Folder** to jump there.
 
-Captures older than 3 days are moved to the **Trash** (not deleted outright) at launch, after each capture, and hourly. Change the number of days, or turn it off, in Style Settings. Only SnapSmith's own `SnapSmith-*.png` files in those two folders are touched. Anything you saved with **Save…** stays where you put it.
+Captures older than 3 days are moved to the **Trash** (not deleted outright) at launch, after each capture, and hourly. Change the number of days, or turn it off, in Style Settings. Only SnapSmith's own `SnapSmith … .png` files in those two folders are touched. Anything you saved with **Save…** stays where you put it.
 
 ## Troubleshooting
 
@@ -140,7 +166,9 @@ Captures older than 3 days are moved to the **Trash** (not deleted outright) at 
 | Permission is asked again after every rebuild | You're signing ad-hoc. Run `./scripts/make-signing-cert.sh` once, then rebuild. |
 | `swift: command not found` | Run `xcode-select --install`, then `./scripts/install.sh` again. |
 | macOS says SnapSmith "can't be opened" | That happens to apps copied from another Mac. Build it on your own Mac with `./scripts/install.sh`, or right-click the app and choose **Open**. |
-| Redact missed something | Detection is best-effort. Switch to the Redact tool (**3**) and click the word, or drag a box over it. |
+| Redact missed something | Detection is best-effort. Switch to the Redact tool (**R**) and click the word, or drag a box over it. |
+| I want the number keys (1–4) for the tools | Open **Shortcuts… → Editor tool keys** and choose **Numbers (1–4)**. |
+| Pressing a letter in the editor does nothing | Click an empty part of the preview first: keys go to whichever control has focus. While typing into a text label, letters are just text. |
 
 ## Update, move, or remove
 
@@ -170,7 +198,7 @@ BUNDLE_ID=com.you.snapsmith ./scripts/bundle.sh   # use your own bundle ID (fork
 - **Hotkeys** use Carbon's `RegisterEventHotKey`, which needs no Accessibility permission.
 - **OCR** uses Vision's `VNRecognizeTextRequest`; word and match positions come from `VNRecognizedText.boundingBox(for:)`.
 - **Rendering** is Core Graphics: redact, then markup, then beautify. Lengths are in points and scaled by the capture's pixel density, so Retina captures keep their proportions.
-- **Redaction patterns** are simple regular expressions plus a validity check: card numbers must pass the Luhn check, IPv6 candidates must parse as real addresses, and API-key candidates must mix letters and digits.
+- **Redaction patterns** are simple regular expressions plus a validity check: card numbers must pass the Luhn check, IPv6 candidates must parse as real addresses, phone numbers need a `+` or visible grouping (and aren't dates or version strings), and token candidates must mix letters and digits. A JWT is recognised by its shape.
 
 **Layout**
 
@@ -182,7 +210,7 @@ BUNDLE_ID=com.you.snapsmith ./scripts/bundle.sh   # use your own bundle ID (fork
 
 ## Limitations
 
-No tilt or 3D effect, no moving or resizing markup after it's drawn (use ⌘Z and redraw), and markup is a fixed red.
+No tilt or 3D effect, and no moving or resizing markup after it's drawn (use ⌘Z and redraw).
 
 ## License
 

@@ -30,6 +30,8 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
     private let ratioPopup = NSPopUpButton()
     private let watermarkEnabled = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let watermarkField = NSTextField(string: "")
+    private let watermarkPositionPopup = NSPopUpButton()
+    private let redactStylePopup = NSPopUpButton()
     private let startColor = NSColorWell()
     private let endColor = NSColorWell()
     private var valueLabels: [NSSlider: NSTextField] = [:]
@@ -45,12 +47,12 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
 
     init(archiveDirectory: URL) {
         self.archiveDirectory = archiveDirectory
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 640),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "SnapSmith Style"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 700, height: 640)
+        window.minSize = NSSize(width: 700, height: 760)
         super.init(window: window)
         window.delegate = self
         buildUI()
@@ -133,38 +135,50 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
         watermarkField.delegate = self  // saves as you type
         watermarkField.widthAnchor.constraint(equalToConstant: 180).isActive = true
         let watermarkRow = NSStackView(views: [watermarkEnabled, watermarkField])
+        watermarkPositionPopup.addItems(withTitles: WatermarkPosition.allCases.map(\.title))
+        watermarkPositionPopup.target = self
+        watermarkPositionPopup.action = #selector(controlChanged)
+        redactStylePopup.addItems(withTitles: RedactStyle.allCases.map(\.title))
+        redactStylePopup.target = self
+        redactStylePopup.action = #selector(controlChanged)
 
-        let grid = NSGridView(views: [
-            [label("Padding"), row(padding)],
-            [label("Rounded"), row(corner)],
-            [label("Shadow"), row(shadow)],
-            [label("Background"), backgroundPopup],
-            [label("Colours"), colors],
-            [label("Angle"), row(angle)],
-            [label("Ratio"), ratioPopup],
-            [label("Watermark"), watermarkRow],
-            [NSGridCell.emptyContentView, insetRow],
-            [label("Inset"), row(inset)],
-        ])
+        // Built row by row: one big heterogeneous literal is too slow for the type checker.
+        var gridRows: [[NSView]] = []
+        gridRows.append([label("Padding"), row(padding)])
+        gridRows.append([label("Rounded"), row(corner)])
+        gridRows.append([label("Shadow"), row(shadow)])
+        gridRows.append([label("Background"), backgroundPopup])
+        gridRows.append([label("Colours"), colors])
+        gridRows.append([label("Angle"), row(angle)])
+        gridRows.append([label("Ratio"), ratioPopup])
+        gridRows.append([label("Watermark"), watermarkRow])
+        gridRows.append([label("Position"), watermarkPositionPopup])
+        gridRows.append([NSGridCell.emptyContentView, insetRow])
+        gridRows.append([label("Inset"), row(inset)])
+        let grid = NSGridView(views: gridRows)
         grid.rowSpacing = 10
         grid.columnSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
 
-        // Auto-redact: master switch, then categories in two columns, then the block colour.
-        let categoryButtons = RedactCategory.allCases.compactMap { redactCategories[$0] }
-        let categoryGrid = NSGridView(views: [
-            [categoryButtons[0], categoryButtons[1]],
-            [categoryButtons[2], categoryButtons[3]],
-        ])
+        // Auto-redact: master switch, categories in two columns, how they're hidden, then the block colour.
+        let categoryButtons: [NSView] = RedactCategory.allCases.compactMap { redactCategories[$0] }
+        var categoryRows: [[NSView]] = []
+        for start in stride(from: 0, to: categoryButtons.count, by: 2) {
+            let second: NSView = start + 1 < categoryButtons.count ? categoryButtons[start + 1] : NSGridCell.emptyContentView
+            categoryRows.append([categoryButtons[start], second])
+        }
+        let categoryGrid = NSGridView(views: categoryRows)
         categoryGrid.columnSpacing = 16
         categoryGrid.rowSpacing = 6
+        let styleRow = NSStackView(views: [label("Hide with"), redactStylePopup])
         let colorRow = NSStackView(views: [label("Block colour"), redactColor])
-        let redactSection = NSStackView(views: [autoRedact, categoryGrid, colorRow])
+        let redactSection = NSStackView(views: [autoRedact, categoryGrid, styleRow, colorRow])
         redactSection.orientation = .vertical
         redactSection.alignment = .leading
         redactSection.spacing = 8
         redactSection.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         categoryGrid.leadingAnchor.constraint(equalTo: redactSection.leadingAnchor, constant: 20).isActive = true
+        styleRow.leadingAnchor.constraint(equalTo: redactSection.leadingAnchor, constant: 20).isActive = true
         colorRow.leadingAnchor.constraint(equalTo: redactSection.leadingAnchor, constant: 20).isActive = true
 
         // Archive retention: old captures go to the Trash.
@@ -254,6 +268,8 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
         ratioPopup.selectItem(withTitle: style.aspectRatio?.rawValue ?? "Free")
         watermarkEnabled.state = style.watermark == nil ? .off : .on
         if let text = style.watermark { watermarkField.stringValue = text }
+        watermarkPositionPopup.selectItem(withTitle: style.watermarkPosition.title)
+        redactStylePopup.selectItem(withTitle: Preferences.redactStyle().title)
         closeAfterCopy.state = Preferences.closeAfterCopy() ? .on : .off
         autoRedact.state = Preferences.autoRedact() ? .on : .off
         let enabled = Preferences.redactCategories()
@@ -279,6 +295,7 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
         style.gradientEnd = endColor.color
         style.aspectRatio = AspectRatio(rawValue: ratioPopup.titleOfSelectedItem ?? "")
         style.watermark = watermarkEnabled.state == .on ? watermarkText : nil
+        style.watermarkPosition = WatermarkPosition.allCases.first { $0.title == watermarkPositionPopup.titleOfSelectedItem } ?? .bottomLeft
         isApplyingEdit = true
         StyleStore.save(style)
         Preferences.setCloseAfterCopy(closeAfterCopy.state == .on)
@@ -287,6 +304,7 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
             Preferences.setRedactCategory(category, enabled: button.state == .on)
         }
         Preferences.setRedactColor(redactColor.color)
+        Preferences.setRedactStyle(RedactStyle.allCases.first { $0.title == redactStylePopup.titleOfSelectedItem } ?? .block)
         isApplyingEdit = false
         updateEnabledStates()
         updateValueLabels()
@@ -345,8 +363,10 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
         [startColor, endColor].forEach { $0.isEnabled = gradient }
         angle.isEnabled = gradient
         watermarkField.isEnabled = watermarkEnabled.state == .on
+        watermarkPositionPopup.isEnabled = watermarkEnabled.state == .on
         let redacting = autoRedact.state == .on
         redactCategories.values.forEach { $0.isEnabled = redacting }
+        redactStylePopup.isEnabled = redacting
         redactColor.isEnabled = redacting
         retentionField.isEnabled = retentionEnabled.state == .on
         retentionStepper.isEnabled = retentionEnabled.state == .on
@@ -398,8 +418,9 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
         let scale = sourceScale
         let redactions = Preferences.autoRedact() && regionsCategories == Preferences.redactCategories() ? regions : []
         let color = Preferences.redactColor()
+        let redactStyle = Preferences.redactStyle()
         renderQueue.async { [weak self] in
-            guard let output = Pipeline.render(source, redactions: redactions, redactColor: color,
+            guard let output = Pipeline.render(source, redactions: redactions, redactColor: color, redactStyle: redactStyle,
                                                style: style, scale: scale) else { return }
             let image = NSImage(cgImage: output, size: NSSize(width: output.width, height: output.height))
             DispatchQueue.main.async {

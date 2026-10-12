@@ -1,24 +1,26 @@
 import AppKit
 import Vision
 
-/// Kinds of sensitive text auto-redact looks for.
+/// Kinds of sensitive text auto-redact looks for. The raw values are the stored setting keys.
 public enum RedactCategory: String, CaseIterable {
     case emails
     case creditCards = "credit-cards"
     case ipAddresses = "ip-addresses"
-    case apiKeys = "api-keys"
+    case phoneNumbers = "phone-numbers"
+    case secrets = "api-keys"
 
     public var title: String {
         switch self {
-        case .emails: return "Emails"
-        case .creditCards: return "Credit cards"
+        case .emails: return "Email addresses"
+        case .creditCards: return "Payment cards"
         case .ipAddresses: return "IP addresses"
-        case .apiKeys: return "API keys"
+        case .phoneNumbers: return "Phone numbers"
+        case .secrets: return "Secrets & tokens"
         }
     }
 
     /// Candidate finder. Matches are then confirmed by `isPlausible`, which keeps the
-    /// patterns simple while avoiding false positives (random digit runs, times, long words).
+    /// patterns simple while avoiding false positives (random digit runs, times, dates, long words).
     var pattern: String {
         switch self {
         case .emails:
@@ -30,8 +32,13 @@ public enum RedactCategory: String, CaseIterable {
             let v4 = "\\b(?:\(octet)\\.){3}\(octet)\\b"
             let v6 = "(?<![0-9A-Za-z_:])[0-9A-Fa-f:]{2,39}(?![0-9A-Za-z_:])"
             return "\(v4)|\(v6)"
-        case .apiKeys:
-            return "\\b[A-Za-z0-9_-]{32,}\\b"
+        case .phoneNumbers:
+            return "(?<![\\w+])\\+?\\(?\\d[\\d ()\\-.]{6,18}\\d(?![\\w])"
+        case .secrets:
+            let jwt = "\\beyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\b"
+            let prefixed = "\\b(?:gh[pousr]|xox[abprs]|sk|pk|rk)[_-][A-Za-z0-9_-]{16,}\\b"
+            let long = "\\b[A-Za-z0-9_-]{32,}\\b"
+            return "\(jwt)|\(prefixed)|\(long)"
         }
     }
 
@@ -54,8 +61,21 @@ public enum RedactCategory: String, CaseIterable {
             if text.contains(".") { return true }
             var address = in6_addr()
             return text.contains(":") && inet_pton(AF_INET6, text, &address) == 1
-        case .apiKeys:
-            // Long identifiers made only of letters (or only digits) are words or numbers, not secrets.
+        case .phoneNumbers:
+            let digits = text.filter(\.isNumber)
+            guard (9...15).contains(digits.count) else { return false }
+            let hasPlus = text.hasPrefix("+")
+            // A bare run of digits is more likely an ID; real numbers are written with a "+" or grouping.
+            guard hasPlus || text.contains(where: { " ()-.".contains($0) }) else { return false }
+            // Dots alone (1.234.567.890, version strings) don't make a phone number.
+            if !hasPlus, !text.contains(where: { " ()-".contains($0) }) { return false }
+            // ISO dates and timestamps: 2026-10-12, 2026-10-12 09.30.15
+            if text.range(of: "^\\d{4}-\\d{2}-\\d{2}", options: .regularExpression) != nil { return false }
+            return true
+        case .secrets:
+            // JWTs are recognisable by their shape. Other candidates must mix letters and digits:
+            // long identifiers made only of letters (or only digits) are words or numbers, not secrets.
+            if text.hasPrefix("eyJ"), text.filter({ $0 == "." }).count == 2 { return true }
             return text.contains(where: \.isLetter) && text.contains(where: \.isNumber)
         }
     }
@@ -71,6 +91,21 @@ public enum RedactCategory: String, CaseIterable {
             sum += value
         }
         return sum % 10 == 0
+    }
+}
+
+/// How a redacted region is hidden. A solid block is the safest: blur and pixelation leave
+/// some information in the image and can sometimes be partly reversed, so prefer the block
+/// for secrets.
+public enum RedactStyle: String, CaseIterable {
+    case block, pixelate, blur
+
+    public var title: String {
+        switch self {
+        case .block: return "Solid block"
+        case .pixelate: return "Pixelate"
+        case .blur: return "Blur"
+        }
     }
 }
 
@@ -179,22 +214,68 @@ public enum Redactor {
         return found
     }
 
-    /// Covers each region with a solid block, padded slightly so glyph edges don't peek out.
-    public static func apply(_ regions: [RedactRegion], to image: CGImage, color: NSColor) -> CGImage? {
+    /// Hides each region in the chosen style. Regions are padded slightly so glyph edges don't peek out.
+    public static func apply(_ regions: [RedactRegion], to image: CGImage, color: NSColor,
+                             style: RedactStyle = .block) -> CGImage? {
         guard !regions.isEmpty else { return image }
         guard let ctx = Bitmap.context(width: image.width, height: image.height) else { return nil }
         let height = CGFloat(image.height)
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        ctx.setFillColor((color.usingColorSpace(.sRGB) ?? color).cgColor)
+
+        let fill = (color.usingColorSpace(.sRGB) ?? color).cgColor
+        let imageBounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         for region in regions {
             let r = region.coveredRect
             let radius = min(4, r.height / 4, r.width / 4)
             // Regions are top-left origin; the context is bottom-left.
             let flipped = CGRect(x: r.minX, y: height - r.maxY, width: r.width, height: r.height)
-            ctx.addPath(CGPath(roundedRect: flipped, cornerWidth: radius, cornerHeight: radius, transform: nil))
+            let path = CGPath(roundedRect: flipped, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            let area = r.integral.intersection(imageBounds)
+            guard style != .block, area.width >= 1, area.height >= 1,
+                  let crop = image.cropping(to: area),   // cropping uses a top-left origin
+                  let softened = soften(crop, style: style, cell: max(6, area.height / 2.5))
+            else {
+                ctx.setFillColor(fill)
+                ctx.addPath(path)
+                ctx.fillPath()
+                continue
+            }
+            ctx.saveGState()
+            ctx.addPath(path)
+            ctx.clip()
+            ctx.interpolationQuality = .none
+            ctx.draw(softened, in: CGRect(x: area.minX, y: height - area.maxY, width: area.width, height: area.height))
+            ctx.restoreGState()
         }
-        ctx.fillPath()
         return ctx.makeImage()
+    }
+
+    private static let ciContext = CIContext()
+
+    /// Pixelated or blurred copy of `crop`, the same size. nil if it can't be produced, in
+    /// which case the caller falls back to a solid block.
+    private static func soften(_ crop: CGImage, style: RedactStyle, cell: CGFloat) -> CGImage? {
+        switch style {
+        case .block:
+            return nil
+        case .pixelate:
+            let w = max(1, Int((CGFloat(crop.width) / cell).rounded(.up))), h = max(1, Int((CGFloat(crop.height) / cell).rounded(.up)))
+            guard let small = Bitmap.context(width: w, height: h), let big = Bitmap.context(width: crop.width, height: crop.height)
+            else { return nil }
+            small.interpolationQuality = .medium  // average each cell
+            small.draw(crop, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let reduced = small.makeImage() else { return nil }
+            big.interpolationQuality = .none      // blow the cells up as flat squares
+            big.draw(reduced, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+            return big.makeImage()
+        case .blur:
+            let input = CIImage(cgImage: crop)
+            guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
+            filter.setValue(input.clampedToExtent(), forKey: kCIInputImageKey)
+            filter.setValue(cell, forKey: kCIInputRadiusKey)
+            guard let output = filter.outputImage?.cropped(to: input.extent) else { return nil }
+            return ciContext.createCGImage(output, from: input.extent)
+        }
     }
 
     /// Vision's normalized, bottom-left rect → pixel rect with a top-left origin.

@@ -7,10 +7,11 @@ final class ShortcutsWindowController: NSWindowController {
     private var recorders: [ShortcutAction: ShortcutRecorderView] = [:]
     private var messages: [ShortcutAction: NSTextField] = [:]
     private weak var center: ShortcutCenter?
+    private let toolKeysPopup = NSPopUpButton()
 
     init(center: ShortcutCenter) {
         self.center = center
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "SnapSmith Shortcuts"
         window.isReleasedWhenClosed = false
@@ -68,10 +69,24 @@ final class ShortcutsWindowController: NSWindowController {
         note.preferredMaxLayoutWidth = 500
         let restore = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreDefaults))
 
-        let stack = NSStackView(views: [grid, note, restore])
+        // Editor tool keys: letters by default, or the number row.
+        toolKeysPopup.addItems(withTitles: ToolKeyScheme.allCases.map(\.title))
+        toolKeysPopup.target = self
+        toolKeysPopup.action = #selector(toolKeysChanged)
+        let toolKeysRow = NSStackView(views: [NSTextField(labelWithString: "Editor tool keys"), toolKeysPopup])
+        toolKeysRow.spacing = 10
+        let toolKeysNote = NSTextField(wrappingLabelWithString: "These pick the markup tools in the preview window: text, arrow, redact and box. Shift + the key changes a tool's style (with the number keys, pressing the same key again does too).")
+        toolKeysNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        toolKeysNote.textColor = .secondaryLabelColor
+        toolKeysNote.preferredMaxLayoutWidth = 500
+        let divider = NSBox()
+        divider.boxType = .separator
+
+        let stack = NSStackView(views: [grid, note, restore, divider, toolKeysRow, toolKeysNote])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 16
+        stack.spacing = 14
+        divider.widthAnchor.constraint(equalToConstant: 512).isActive = true
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
@@ -83,7 +98,13 @@ final class ShortcutsWindowController: NSWindowController {
         ])
     }
 
+    @objc private func toolKeysChanged() {
+        let index = toolKeysPopup.indexOfSelectedItem
+        Preferences.setToolKeyScheme(ToolKeyScheme.allCases[index])
+    }
+
     private func refresh() {
+        toolKeysPopup.selectItem(at: ToolKeyScheme.allCases.firstIndex(of: Preferences.toolKeyScheme()) ?? 0)
         for action in ShortcutAction.allCases {
             recorders[action]?.shortcut = Preferences.shortcut(for: action)
             show(center?.unavailable.contains(action) == true ? "Couldn't be registered — pick another" : nil, for: action)

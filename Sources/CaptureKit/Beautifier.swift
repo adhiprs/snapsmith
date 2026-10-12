@@ -18,6 +18,18 @@ public enum Background: Equatable {
     case image(URL)          // a picture file the user chose
 }
 
+/// Where the watermark badge sits on the canvas, inset from its edges.
+public enum WatermarkPosition: String, CaseIterable {
+    case bottomLeft, bottomCenter, bottomRight
+    public var title: String {
+        switch self {
+        case .bottomLeft: return "Bottom left"
+        case .bottomCenter: return "Bottom centre"
+        case .bottomRight: return "Bottom right"
+        }
+    }
+}
+
 /// "Beautify": place the screenshot on a background with padding, rounded corners and a
 /// drop shadow.
 ///
@@ -35,18 +47,17 @@ public struct BeautifyStyle: Equatable {
     public var insetBalance = true
     public var background: Background = .gradient
     public var aspectRatio: AspectRatio? = nil
-    /// Text under the screenshot's bottom-right corner. nil = off.
+    /// A small badge in a corner of the canvas. nil = off.
     public var watermark: String? = nil
+    public var watermarkPosition: WatermarkPosition = .bottomLeft
 
     public init() {}
 }
 
 public enum Beautifier {
-    /// Height of the band under the screenshot that holds the watermark, in points.
-    static let watermarkBand: CGFloat = 28
-
-    /// Returns a new image `padding × scale` pixels larger on every side (plus the watermark
-    /// band, then widened or heightened to the aspect ratio).
+    /// Returns a new image `padding × scale` pixels larger on every side, widened or
+    /// heightened to the aspect ratio. If a watermark is set and the bottom padding is too thin
+    /// to hold its badge, only the bottom edge grows.
     /// - Parameter scale: pixels per point of the capture (2 on Retina displays).
     public static func beautify(_ source: CGImage, style: BeautifyStyle = BeautifyStyle(),
                                 scale: CGFloat = 1) -> CGImage? {
@@ -56,10 +67,11 @@ public enum Beautifier {
         } ?? source
         let padding = (style.padding * scale).rounded()
         let shadowRadius = style.shadowRadius * scale
-        let band = style.watermark?.isEmpty == false ? (watermarkBand * scale).rounded() : 0
+        let badge = style.watermark.flatMap { $0.isEmpty ? nil : WatermarkBadge(text: $0, scale: scale) }
+        let extraBottom = badge.map { max(0, ($0.requiredBottomSpace - padding).rounded(.up)) } ?? 0
         let imageSize = CGSize(width: image.width, height: image.height)
         let canvas = canvasSize(content: CGSize(width: imageSize.width + padding * 2,
-                                                height: imageSize.height + padding * 2 + band),
+                                                height: imageSize.height + padding * 2 + extraBottom),
                                 ratio: style.aspectRatio)
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
               let ctx = CGContext(data: nil, width: Int(canvas.width), height: Int(canvas.height),
@@ -69,9 +81,9 @@ public enum Beautifier {
 
         drawBackground(in: ctx, size: canvas, style: style, space: space)
 
-        // Centre the screenshot plus its watermark band; the band sits under the screenshot.
+        // Centre the screenshot in the canvas, above any extra room made for the badge.
         let frame = CGRect(x: ((canvas.width - imageSize.width) / 2).rounded(),
-                           y: ((canvas.height - imageSize.height - band) / 2).rounded() + band,
+                           y: ((canvas.height - imageSize.height - extraBottom) / 2).rounded() + extraBottom,
                            width: imageSize.width, height: imageSize.height)
         let radius = min(style.cornerRadius * scale, imageSize.width / 2, imageSize.height / 2)
         let shape = CGPath(roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil)
@@ -94,9 +106,7 @@ public enum Beautifier {
         ctx.draw(image, in: frame)
         ctx.restoreGState()
 
-        if let text = style.watermark, !text.isEmpty {
-            drawWatermark(text, in: ctx, rightEdge: frame.maxX, bandMinY: frame.minY - band, band: band, scale: scale)
-        }
+        badge?.draw(in: ctx, canvas: canvas, position: style.watermarkPosition)
         return ctx.makeImage()
     }
 
@@ -108,25 +118,6 @@ public enum Beautifier {
             return CGSize(width: (content.height * r).rounded(), height: content.height.rounded())
         }
         return CGSize(width: content.width.rounded(), height: (content.width / r).rounded())
-    }
-
-    private static func drawWatermark(_ text: String, in ctx: CGContext, rightEdge: CGFloat,
-                                      bandMinY: CGFloat, band: CGFloat, scale: CGFloat) {
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.5)
-        shadow.shadowBlurRadius = 3 * scale
-        shadow.shadowOffset = NSSize(width: 0, height: -scale)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12 * scale, weight: .semibold),
-            .foregroundColor: NSColor.white,
-            .shadow: shadow,
-        ]
-        let string = NSAttributedString(string: text, attributes: attributes)
-        let size = string.size()
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-        string.draw(at: NSPoint(x: rightEdge - size.width, y: bandMinY + (band - size.height) / 2))
-        NSGraphicsContext.restoreGraphicsState()
     }
 
     private static func drawBackground(in ctx: CGContext, size: CGSize, style: BeautifyStyle, space: CGColorSpace) {
@@ -234,5 +225,46 @@ enum BackgroundCache {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         images[url] = image
         return image
+    }
+}
+
+/// The watermark: a small translucent badge with white text, in a corner of the canvas.
+struct WatermarkBadge {
+    let text: NSAttributedString
+    let size: CGSize          // badge size in pixels
+    let margin: CGFloat       // distance from the canvas edge, in pixels
+    private let padding: CGSize
+
+    init(text string: String, scale: CGFloat) {
+        text = NSAttributedString(string: string, attributes: [
+            .font: NSFont.systemFont(ofSize: 11 * scale, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ])
+        let measured = text.size()
+        padding = CGSize(width: 9 * scale, height: 4 * scale)
+        size = CGSize(width: measured.width + padding.width * 2, height: measured.height + padding.height * 2)
+        margin = 14 * scale
+    }
+
+    /// Bottom padding needed so the badge sits clear of the screenshot's edge.
+    var requiredBottomSpace: CGFloat { margin + size.height + margin * 0.5 }
+
+    func draw(in ctx: CGContext, canvas: CGSize, position: WatermarkPosition) {
+        let x: CGFloat
+        switch position {
+        case .bottomLeft: x = margin
+        case .bottomCenter: x = (canvas.width - size.width) / 2
+        case .bottomRight: x = canvas.width - margin - size.width
+        }
+        let box = CGRect(x: x.rounded(), y: margin, width: size.width, height: size.height)  // bottom-left origin
+        ctx.saveGState()
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.38).cgColor)
+        ctx.addPath(CGPath(roundedRect: box, cornerWidth: box.height / 2, cornerHeight: box.height / 2, transform: nil))
+        ctx.fillPath()
+        ctx.restoreGState()
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        text.draw(at: NSPoint(x: box.minX + padding.width, y: box.minY + padding.height))
+        NSGraphicsContext.restoreGraphicsState()
     }
 }

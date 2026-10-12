@@ -7,8 +7,9 @@ public enum Pipeline {
     ///   - redactions: regions to cover; empty when auto-redact is off.
     ///   - style: nil returns the (redacted) capture without beautifying.
     public static func render(_ source: CGImage, redactions: [RedactRegion], redactColor: NSColor,
-                              annotations: [Annotation] = [], style: BeautifyStyle?, scale: CGFloat) -> CGImage? {
-        guard let redacted = Redactor.apply(redactions, to: source, color: redactColor),
+                              redactStyle: RedactStyle = .block, annotations: [Annotation] = [],
+                              style: BeautifyStyle?, scale: CGFloat) -> CGImage? {
+        guard let redacted = Redactor.apply(redactions, to: source, color: redactColor, style: redactStyle),
               let annotated = Annotator.apply(annotations, to: redacted, scale: scale)
         else { return nil }
         guard let style else { return annotated }
@@ -27,7 +28,7 @@ public enum Pipeline {
         let beautify = Preferences.beautify()
         guard beautify || !redactions.isEmpty else { return raw }
         guard let output = render(source, redactions: redactions, redactColor: Preferences.redactColor(),
-                                  style: beautify ? StyleStore.load() : nil, scale: Beautifier.scale(of: raw))
+                                  redactStyle: Preferences.redactStyle(), style: beautify ? StyleStore.load() : nil, scale: Beautifier.scale(of: raw))
         else { throw CaptureError.unreadableImage }
         return try Beautifier.writeOutput(output, forRaw: raw)
     }

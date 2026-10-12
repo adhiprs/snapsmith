@@ -6,6 +6,16 @@ import CoreGraphics
 /// window shadow, `-a` no attached windows, `-w` window picking only.
 /// The image is written to a temp file rather than sent to the clipboard (`-c`), so the
 /// user's clipboard isn't clobbered mid-capture; we copy it ourselves when asked.
+/// How SnapSmith lays out and names its archive:
+/// `Archives/Originals/SnapSmith 2026-10-12 at 09.30.15.png` for the capture as taken, and
+/// `Archives/Edited/<same name>` for the version with redaction, markup and styling applied.
+public enum ArchiveLayout {
+    public static let originalsFolder = "Originals"
+    public static let editedFolder = "Edited"
+    public static let filePrefix = "SnapSmith "
+    public static let dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+}
+
 public enum CaptureMode: Equatable {
     case interactive   // drag a region, or press Space to toggle to window picking
     case window        // window picking only
@@ -42,13 +52,13 @@ public struct ScreenCapturer {
 
     public static var defaultArchiveDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SnapSmith/Archives/Raw", isDirectory: true)
+            .appendingPathComponent("SnapSmith/Archives/\(ArchiveLayout.originalsFolder)", isDirectory: true)
     }
 
-    /// Where the beautified version of a raw capture goes: `Archives/Output/<same name>`.
+    /// Where the edited version of a capture goes: `Archives/Edited/<same name>`.
     public static func outputURL(forRaw raw: URL) -> URL {
         raw.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Output", isDirectory: true)
+            .appendingPathComponent(ArchiveLayout.editedFolder, isDirectory: true)
             .appendingPathComponent(raw.lastPathComponent)
     }
 
@@ -125,20 +135,20 @@ public struct ScreenCapturer {
         }
     }
 
-    /// Moves the raw capture into the archive under a timestamped name:
-    /// `SnapSmith-yyyy-MM-dd-HH.mm.ss.png`.
+    /// Moves the capture into the archive under a timestamped name:
+    /// `SnapSmith 2026-10-12 at 09.30.15.png`.
     func archive(_ source: URL) throws -> URL {
         guard NSImage(contentsOf: source) != nil else { throw CaptureError.unreadableImage }
         try FileManager.default.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
 
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd-HH.mm.ss"
+        formatter.dateFormat = ArchiveLayout.dateFormat
         let stamp = formatter.string(from: Date())
-        var destination = archiveDirectory.appendingPathComponent("SnapSmith-\(stamp).png")
+        var destination = archiveDirectory.appendingPathComponent("\(ArchiveLayout.filePrefix)\(stamp).png")
         var suffix = 1
         while FileManager.default.fileExists(atPath: destination.path) {
             suffix += 1
-            destination = archiveDirectory.appendingPathComponent("SnapSmith-\(stamp)-\(suffix).png")
+            destination = archiveDirectory.appendingPathComponent("\(ArchiveLayout.filePrefix)\(stamp) \(suffix).png")
         }
         try FileManager.default.moveItem(at: source, to: destination)
         return destination
