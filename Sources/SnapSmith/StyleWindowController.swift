@@ -45,12 +45,12 @@ final class StyleWindowController: NSWindowController, NSWindowDelegate, NSTextF
 
     init(archiveDirectory: URL) {
         self.archiveDirectory = archiveDirectory
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 780),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 640),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "SnapSmith Style"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 700, height: 740)
+        window.minSize = NSSize(width: 700, height: 640)
         super.init(window: window)
         window.delegate = self
         buildUI()
